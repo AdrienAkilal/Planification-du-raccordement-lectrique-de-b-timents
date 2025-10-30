@@ -124,6 +124,11 @@ Boucle de feedback client sur les zones prioritaires et les contraintes terrain.
 
 ---
 
-**Auteur :** Adrien Akilal  
+**Contributeurs :** 
+CHERIFI	Yacine
+SAICHI	Madjid
+AKILAL	Adrien
+BOUNAB 	Abdenour 
+
 **Formation :** Mastère Data & Intelligence Artificielle — HETIC  
 **Année :** 2025
