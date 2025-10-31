@@ -1,0 +1,19 @@
+{
+  "longueur_totale": 179021.09188481676,
+  "cout_total": 0.0,
+  "temps_total_h": 0.0,
+  "repartition_type": [
+    {
+      "type_infra": "a_remplacer",
+      "longueur": 5578.311729699667,
+      "cout": 0.0,
+      "temps_h": 0.0
+    },
+    {
+      "type_infra": "infra_intacte",
+      "longueur": 173442.7801551171,
+      "cout": 0.0,
+      "temps_h": 0.0
+    }
+  ]
+}

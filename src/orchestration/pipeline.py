@@ -1,99 +1,132 @@
-import pandas as pd
-import geopandas as gpd
-import os
+# src/orchestration/pipeline.py
+from __future__ import annotations
 
-from src.ingestion.readers import DataReaders
-from src.ingestion.cleaner import Cleaner
-from src.ingestion.syncer import Syncer
-from src.analytics.baselines import Baselines
-from src.viz.lines import LinesViz
-from src.exports.writers import Writers
+from pathlib import Path
+import pandas as pd
+
+from src.utils.paths import staging_dir, outputs_dir
+from src.utils.paths import staging_dir
+from src.ingestion.readers import read_table, read_csv
+#from src.ingestion.readers import read_table, read_csv, staging_dir, outputs_dir
+from src.ingestion.cleaner import clean_and_join
+from src.ingestion.syncer import apply_business_csv
+from src.preparation.buildings_priority import add_building_priority
+from src.preparation.enrichments import enrich_costs_and_flags
+from src.analytics.baselines import compute_kpis, save_kpis
+from src.analytics.plan_greedy import greedy_plan
+from src.exports.writers import save_csv
+from src.analytics.work_organizer import build_work_orders
+
 
 class ElectricNetworkPipeline:
-    """Pipeline mince : n'orchestrer que les appels pour garder le code modulaire et lisible."""
+    """
+    Orchestrateur minimal :
+      - lit les fichiers d'entrée (xlsx + csv)
+      - appelle les modules (clean/join, sync métier, enrich, kpi, plan)
+      - dépose les fichiers en staging/ et outputs/
+    """
 
-    def __init__(self, settings: dict):
-        self.s = settings
-        self.w = Writers(settings.get("staging_dir","data/staging"),
-                         settings.get("outputs_dir","data/outputs"))
+    def __init__(self, paths: dict, crs_metric: str = "EPSG:2154"):
+        """
+        paths attend au minimum :
+          paths = {
+            "reseau_en_arbre": "data/inputs/reseau_en_arbre.xlsx",
+            "batiments":       "data/inputs/batiments.csv",
+            "infra":           "data/inputs/infra.csv",
+            # optionnels :
+            "travaux":         "data/inputs/travaux.csv",
+            "costs_yaml":      "configs/costs.yaml",
+          }
+        """
+        self.paths = paths
+        self.crs = crs_metric
+        self.staged: dict[str, str] = {}
+        self.outputs: dict[str, str] = {}
 
-        # state
-        self.df_bat = self.df_infra = self.df_arbre = None
-        self.df_sync = self.df_infra_agg = self.df_bat_agg = None
-        self.gdf_bat = self.gdf_infra = self.gdf_lines = None
-        self.kpi = {}
-        self.notes = {}
-        self.map = None
-        self.manifest = {}
+    # ------------------------------
+    # Helpers
+    # ------------------------------
+    def _read_inputs(self) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame | None, pd.DataFrame | None]:
+        # Reseau (XLSX) + Batiments/Infra (CSV)
+        df_reseau = read_table(self.paths["reseau_en_arbre"])           # xlsx
+        df_bat    = read_csv(self.paths["batiments"])                    # csv
+        df_infra  = read_csv(self.paths["infra"])                        # csv
+        df_trav   = read_csv(self.paths["travaux"]) if self.paths.get("travaux") else None
 
-    def __repr__(self):
-        return f"<ENetPipe bat={0 if self.df_bat is None else len(self.df_bat)} infra={0 if self.df_infra is None else len(self.df_infra)} reseau={0 if self.df_arbre is None else len(self.df_arbre)}>"
+        # Normalisation légère des en-têtes
+        for df in (df_reseau, df_bat, df_infra):
+            df.columns = [c.strip().lower() for c in df.columns]
 
-    def run(self):
-        self.load()
-        self.prepare()
-        self.analyze()
-        self.visualize()
-        self.export()
-        return self
+        # Trace utile
+        print(f"[INGEST] reseau:{df_reseau.shape} bat:{df_bat.shape} infra:{df_infra.shape} trav:{None if df_trav is None else df_trav.shape}")
 
-    # --- étapes ---
-    def load(self):
-        r = DataReaders()
-        p = self.s["inputs"]
-        self.df_bat   = r.read_batiments(p["batiments"])
-        self.df_infra = r.read_infra(p["infra"])
-        self.df_arbre = r.read_reseau_arbre(p["reseau_arbre"], self.s.get("sheet_name","reseau_en_arbre"))
+        return df_reseau, df_bat, df_infra, df_trav
 
-        # shapefiles (optionnels)
-        self.gdf_bat   = r.read_shp(p.get("batiments_shp",""))
-        self.gdf_infra = r.read_shp(p.get("infrastructures_shp",""))
+    def _stage_exports(self, df_sync: pd.DataFrame, infra_base: pd.DataFrame,
+                       bat_prio: pd.DataFrame, kpi_path: Path) -> None:
+        sdir = staging_dir()
+        self.staged["reseau_sync"]         = str(save_csv(df_sync,       sdir / "reseau_sync"))
+        self.staged["infra_agg_baseline"]  = str(save_csv(infra_base,    sdir / "infra_agg_baseline"))
+        self.staged["bat_agg_baseline"]    = str(save_csv(bat_prio,      sdir / "bat_agg_baseline"))
+        self.staged["kpi_baseline"]        = str(kpi_path)
 
-    def prepare(self):
-        # nettoyage soft + typage
-        self.df_bat   = Cleaner.to_numeric(Cleaner.strip(self.df_bat),   ["nb_maisons"])
-        self.df_infra = Cleaner.strip(self.df_infra)
-        self.df_arbre = Cleaner.to_numeric(Cleaner.strip(self.df_arbre), ["nb_maisons","longueur"])
-        # filtres/QA
-        self.df_arbre, n_len = Cleaner.drop_len_anomalies(self.df_arbre, "longueur", 0.0)
-        self.df_arbre, n_dup = Cleaner.drop_pair_dupes(self.df_arbre, ("id_batiment","infra_id"))
-        self.notes.update({"longueur<=0_supprimees": n_len, "dup_pairs_supprimes": n_dup})
-        # jointures minimales
-        self.df_sync = Syncer.reseau_sync(self.df_arbre, self.df_bat, self.df_infra)
+    # ------------------------------
+    # Run
+    # ------------------------------
+    def run(self) -> dict:
+        # 1) Read inputs (xlsx + csv)
+        df_reseau, df_bat, df_infra, df_trav = self._read_inputs()
 
-    def analyze(self):
-        self.df_infra_agg = Baselines.agg_infra(self.df_sync)
-        self.df_bat_agg   = Baselines.agg_bat(self.df_sync)
-        self.kpi          = Baselines.kpi(self.df_sync, self.df_bat, self.df_infra, self.notes)
+        # 2) Clean + join (aligne les colonnes, corrige nb_maisons via batiments, joint avec infra)
+        df_joined, infra_base, bat_base = clean_and_join(df_reseau, df_bat, df_infra)
 
-    def visualize(self):
-        self.gdf_lines = LinesViz.enrich_lines(self.gdf_infra, self.df_infra_agg) if self.gdf_infra is not None else None
-        self.map = LinesViz.folium_map(self.gdf_lines, self.gdf_bat) if self.gdf_lines is not None else None
+        # 3) Synchronisation métier (CSV "travaux & missions" : surclasse/complète les attributs)
+        df_sync = apply_business_csv(df_joined, df_trav)
 
-    def export(self):
-        # staging
-        p_sync = self.w.csv(self.df_sync,      self.w.staging_dir, "reseau_sync")
-        p_iagg = self.w.csv(self.df_infra_agg, self.w.staging_dir, "infra_agg_baseline")
-        p_bagg = self.w.csv(self.df_bat_agg,   self.w.staging_dir, "bat_agg_baseline")
-        p_kpi  = self.w.json(self.kpi,         self.w.staging_dir, "kpi_baseline")
-        # segments à réparer vs OK
-        seg = self.df_infra_agg[["infra_id","type_infra","infra_type_logique","bat_desservis","prises_total","longueur_ref"]].copy()
-        seg_bad = seg[seg["infra_type_logique"].str.lower()=="a_remplacer"]
-        seg_ok  = seg[seg["infra_type_logique"].str.lower()!="a_remplacer"]
-        p_bad = self.w.csv(seg_bad, self.w.outputs_dir, "segments_a_reparer")
-        p_ok  = self.w.csv(seg_ok,  self.w.outputs_dir, "segments_ok")
-        # geojson (si couche enrichie)
-        p_geo = self.w.geojson(self.gdf_lines, self.w.outputs_dir, "infrastructures_enrich")
-        self.manifest = {
-            "staging": {
-                "reseau_sync": p_sync,
-                "infra_agg_baseline": p_iagg,
-                "bat_agg_baseline": p_bagg,
-                "kpi_baseline": p_kpi
-            },
-            "outputs": {
-                "segments_a_reparer": p_bad,
-                "segments_ok": p_ok,
-                "infrastructures_enrich_geojson": p_geo
-            }
-        }
+        # 4) Préparation (priorité bâtiment : ex. hôpital > école > habitation, + règles d’occupation si dispo)
+        bat_prio = add_building_priority(bat_base)
+
+        # 5) Enrichissement coûts/temps/flags (barèmes depuis costs.yaml si fourni)
+        costs_yaml = self.paths.get("costs_yaml", "configs/costs.yaml")
+        df_enrich = enrich_costs_and_flags(df_sync, costs_yaml)
+
+        # 6) KPIs de base (répartition longueurs/coûts/temps par type d’infra)
+        kpis = compute_kpis(df_enrich)
+        kpi_path = save_kpis(kpis, staging_dir() / "kpi_baseline.json")
+
+        # 7) Exports STAGING (datasets de référence pour audit)
+        self._stage_exports(df_sync, infra_base, bat_prio, kpi_path)
+
+        # 8) Segments à réparer / OK
+        seg_ok  = df_enrich[df_enrich["a_reparer"] == 0].copy()
+        seg_rep = df_enrich[df_enrich["a_reparer"] == 1].copy()
+        odir = outputs_dir()
+        self.outputs["segments_a_reparer"] = str(save_csv(seg_rep, odir / "segments_a_reparer"))
+        self.outputs["segments_ok"]        = str(save_csv(seg_ok,  odir / "segments_ok"))
+
+        # 9) Plan glouton
+        plan_df = greedy_plan(df_enrich, bat_prio)
+        self.outputs["plan_glouton"] = str(save_csv(plan_df, odir / "plan_glouton"))
+
+        # 10) Organisation des travaux (Hôpital phase 0 + phases 40/20/20/20)
+        work_orders, phases_summary, meta = build_work_orders(
+            df_enrich=df_enrich,
+            plan_df=plan_df,
+            costs_yaml=costs_yaml
+        )
+        self.outputs["work_orders"]    = str(save_csv(work_orders,    odir / "work_orders"))
+        self.outputs["phases_summary"] = str(save_csv(phases_summary, odir / "phases_summary"))
+
+        if not meta["hospital_margin_ok"]:
+            print(f"⚠️ HÔPITAL: {meta['hospital_time_needed_h']:.2f} h > objectif {meta['hospital_time_goal_h']:.2f} h (marge 20% NON respectée)")
+        else:
+            print(f"✅ HÔPITAL: {meta['hospital_time_needed_h']:.2f} h ≤ objectif {meta['hospital_time_goal_h']:.2f} h")
+
+        return {"staging": self.staged, "outputs": self.outputs}
+        #    Difficulté(infra)     = longueur / nb_maisons (mutualisation)
+        #    Difficulté(bâtiment)  = somme(difficultés des infras non réparées)
+        #    Phase 0 = bâtiments dont toutes les infras sont déjà intactes.
+        plan_df = greedy_plan(df_enrich, bat_prio)
+        self.outputs["plan_glouton"] = str(save_csv(plan_df, odir / "plan_glouton"))
+
+        return {"staging": self.staged, "outputs": self.outputs}

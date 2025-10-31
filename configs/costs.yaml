@@ -1,0 +1,29 @@
+# configs/costs.yaml
+units:
+  # coût matériel au mètre
+  cost_per_m:
+    aerien: 500
+    semi-aerien: 750
+    fourreau: 900
+
+  # durée (heures) par mètre et par ouvrier (homme·heure / m)
+  hours_per_m:
+    aerien: 2
+    semi-aerien: 4
+    fourreau: 5
+
+workforce:
+  worker_wage_per_hour: 37.5     # 300 € / 8 h
+  max_workers_per_infra: 4       # parallélisme max par tronçon
+
+hospital:
+  generator_hours: 20            # autonomie
+  time_margin: 0.20              # +20% de marge => objectif = 20h * (1 - 0.20) = 16 h max
+
+# Normalisation de libellés en entrée
+aliases:
+  "aérien": "aerien"
+  "semi-aérien": "semi-aerien"
+  "semi aérien": "semi-aerien"
+  "Semi-aérien": "semi-aerien"
+  "Semi aérien": "semi-aerien"
