@@ -5,9 +5,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.utils.paths import staging_dir, outputs_dir
-from src.utils.paths import staging_dir
 from src.ingestion.readers import read_table, read_csv
-#from src.ingestion.readers import read_table, read_csv, staging_dir, outputs_dir
 from src.ingestion.cleaner import clean_and_join
 from src.ingestion.syncer import apply_business_csv
 from src.preparation.buildings_priority import add_building_priority
@@ -121,12 +119,5 @@ class ElectricNetworkPipeline:
             print(f"⚠️ HÔPITAL: {meta['hospital_time_needed_h']:.2f} h > objectif {meta['hospital_time_goal_h']:.2f} h (marge 20% NON respectée)")
         else:
             print(f"✅ HÔPITAL: {meta['hospital_time_needed_h']:.2f} h ≤ objectif {meta['hospital_time_goal_h']:.2f} h")
-
-        return {"staging": self.staged, "outputs": self.outputs}
-        #    Difficulté(infra)     = longueur / nb_maisons (mutualisation)
-        #    Difficulté(bâtiment)  = somme(difficultés des infras non réparées)
-        #    Phase 0 = bâtiments dont toutes les infras sont déjà intactes.
-        plan_df = greedy_plan(df_enrich, bat_prio)
-        self.outputs["plan_glouton"] = str(save_csv(plan_df, odir / "plan_glouton"))
 
         return {"staging": self.staged, "outputs": self.outputs}

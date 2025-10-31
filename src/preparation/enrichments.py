@@ -17,7 +17,7 @@ DEFAULT_COSTS = {
         "fourreau": 5.0,
     },
     "crew_max_per_infra": 4,
-    "worker_eur_per_day8h": 300.0,
+    "worker_eur_per_hour": 37.5,
 }
 
 def _load_costs_yaml(path: str | Path | None) -> dict:
@@ -57,11 +57,20 @@ def enrich_costs_and_flags(df: pd.DataFrame, costs_yaml: str | Path | None = Non
     df = df.copy()
     cfg = _load_costs_yaml(costs_yaml)
 
-    mat = cfg["material_eur_per_m"]
-    hpm = cfg["hours_per_m"]
-    crew_max = int(cfg.get("crew_max_per_infra", 4))
-    day8 = float(cfg.get("worker_eur_per_day8h", 300.0))
-    hourly = day8 / 8.0
+    # Mapping des clés YAML aux noms attendus
+    if "units" in cfg:
+        mat = cfg["units"].get("cost_per_m", cfg.get("material_eur_per_m", {}))
+        hpm = cfg["units"].get("hours_per_m", cfg.get("hours_per_m", {}))
+    else:
+        mat = cfg.get("material_eur_per_m", {})
+        hpm = cfg.get("hours_per_m", {})
+    
+    if "workforce" in cfg:
+        crew_max = int(cfg["workforce"].get("max_workers_per_infra", cfg.get("crew_max_per_infra", 4)))
+        hourly = float(cfg["workforce"].get("worker_wage_per_hour", cfg.get("worker_eur_per_hour", 37.5)))
+    else:
+        crew_max = int(cfg.get("crew_max_per_infra", 4))
+        hourly = float(cfg.get("worker_eur_per_hour", 37.5))
 
     df["type_infra"] = df["type_infra"].map(_normalize_type)
 
@@ -85,12 +94,18 @@ def enrich_costs_and_flags(df: pd.DataFrame, costs_yaml: str | Path | None = Non
     df["labor_cost"]    = df["man_hours"] * hourly
     df["cost_total"]    = df["material_cost"] + df["labor_cost"]
 
-    # Flag de réparations: si coût/temps > 0, on considère à réparer (vs “infra_intacte” si tu as le champ)
+    # Flag de réparations: si coût/temps > 0, on considère à réparer (vs "infra_intacte" si tu as le champ)
     if "infra_type" in df.columns:
-        # quand fourni, “infra_intacte” prime
+        # quand fourni, "infra_intacte" prime
         mask_intact = (df["infra_type"].astype(str).str.lower() == "infra_intacte")
         df["a_reparer"] = (~mask_intact & (df["cost_total"] > 0)).astype(int)
     else:
         df["a_reparer"] = (df["cost_total"] > 0).astype(int)
+
+    # Flag hôpital : si type_batiment contient "hôpital" ou "hopital"
+    if "type_batiment" in df.columns:
+        df["is_hospital"] = df["type_batiment"].astype(str).str.lower().str.contains("h[oô]pital", regex=True, na=False).astype(int)
+    else:
+        df["is_hospital"] = 0
 
     return df
