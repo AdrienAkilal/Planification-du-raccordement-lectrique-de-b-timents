@@ -1,19 +1,19 @@
 {
   "longueur_totale": 179021.09188481676,
-  "cout_total": 0.0,
-  "temps_total_h": 0.0,
+  "cout_total": 145099070.52539906,
+  "temps_total_h": 151344.1730090261,
   "repartition_type": [
     {
       "type_infra": "a_remplacer",
       "longueur": 5578.311729699667,
-      "cout": 0.0,
-      "temps_h": 0.0
+      "cout": 3975301.5061093383,
+      "temps_h": 3921.7590590257405
     },
     {
       "type_infra": "infra_intacte",
       "longueur": 173442.7801551171,
-      "cout": 0.0,
-      "temps_h": 0.0
+      "cout": 141123769.01928973,
+      "temps_h": 147422.41395000037
     }
   ]
 }

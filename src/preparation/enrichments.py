@@ -72,18 +72,21 @@ def enrich_costs_and_flags(df: pd.DataFrame, costs_yaml: str | Path | None = Non
         crew_max = int(cfg.get("crew_max_per_infra", 4))
         hourly = float(cfg.get("worker_eur_per_hour", 37.5))
 
-    df["type_infra"] = df["type_infra"].map(_normalize_type)
+    # Utilise type_infra_src (type physique) pour les calculs de coûts
+    # type_infra contient l'état (infra_intacte, a_remplacer)
+    type_col = "type_infra_src" if "type_infra_src" in df.columns else "type_infra"
+    df[type_col] = df[type_col].map(_normalize_type)
 
-    df["hours_per_m"] = df["type_infra"].map(hpm)
-    df["cost_per_m"]  = df["type_infra"].map(mat)
+    df["hours_per_m"] = df[type_col].map(hpm)
+    df["cost_per_m"]  = df[type_col].map(mat)
 
     unknown_mask = df["hours_per_m"].isna() | df["cost_per_m"].isna()
     if unknown_mask.any():
-        df.loc[unknown_mask, "type_infra"] = df.loc[unknown_mask, "type_infra"].fillna("inconnu")
+        df.loc[unknown_mask, type_col] = df.loc[unknown_mask, type_col].fillna("inconnu")
         df["hours_per_m"] = df["hours_per_m"].fillna(0.0)
         df["cost_per_m"]  = df["cost_per_m"].fillna(0.0)
-        top = df.loc[unknown_mask, "type_infra"].value_counts().head(10).to_dict()
-        print(f"⚠️ {int(unknown_mask.sum())} lignes avec type_infra inconnu → coûts/temps=0. Top: {top}")
+        top = df.loc[unknown_mask, type_col].value_counts().head(10).to_dict()
+        print(f"⚠️ {int(unknown_mask.sum())} lignes avec {type_col} inconnu → coûts/temps=0. Top: {top}")
 
     # hypothèse: 1 <= crew_effectif <= crew_max (si tu veux modéliser un crew variable, ajoute une colonne)
     crew =  max(1, min(crew_max, crew_max))  # par défaut on sature à crew_max
