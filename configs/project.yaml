@@ -1,0 +1,11 @@
+weights:
+  W_COST: 0.7
+  W_TIME: 0.3
+  W_GAIN: 0.2
+  W_RES:  0.1
+greedy:
+  rolling_normalization_every: 0
+constraints:
+  max_budget: null
+  max_hours: null
+phasing: [0.0, 0.4, 0.2, 0.2, 0.2]
